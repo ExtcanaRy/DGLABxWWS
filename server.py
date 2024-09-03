@@ -219,8 +219,8 @@ async def strength_ctrl_init():
     while strength_init <= strength_limit["a_min"] and strength_init <= strength_limit["b_min"]:
         await strength_ctrl(1, strength_init)
         await strength_ctrl(2, strength_init)
-        strength_init += 2
-        await asyncio.sleep(0.5)
+        strength_init += 1
+        await asyncio.sleep(0.25)
     strength_init = 0
 
 
@@ -231,11 +231,11 @@ async def strength_ctrl_loop():
         while strength_a <= strength_limit["a_max"] and strength_b <= strength_limit["b_max"]:
             await strength_ctrl(1, strength_a)
             await strength_ctrl(2, strength_b)
-            strength_a += 2
-            strength_b += 2
-            await asyncio.sleep(0.3)
-        strength_a -= 2
-        strength_b -= 2
+            strength_a += 1
+            strength_b += 1
+            await asyncio.sleep(0.15)
+        strength_a -= 1
+        strength_b -= 1
 
         delay_high = random.randint(0, 3)
         if delay_high == 0:
@@ -245,20 +245,20 @@ async def strength_ctrl_loop():
         while strength_a >= strength_limit["a_min"] and strength_b >= strength_limit["b_min"]:
             await strength_ctrl(1, strength_a)
             await strength_ctrl(2, strength_b)
-            strength_a -= 2
-            strength_b -= 2
-            await asyncio.sleep(0.4)
-        strength_a += 2
-        strength_b += 2
+            strength_a -= 1
+            strength_b -= 1
+            await asyncio.sleep(0.2)
+        strength_a += 1
+        strength_b += 1
 
-        delay_low = random.randint(30, 60)
+        delay_low = random.randint(30, 40)
         await asyncio.sleep(delay_low)
 
         rest_probability = random.randint(0, 100)
         if rest_probability <= 40:
             await strength_ctrl(1, 0)
             await strength_ctrl(2, 0)
-            await asyncio.sleep(60)
+            await asyncio.sleep(30)
             await strength_ctrl_init()
 
 
@@ -300,25 +300,25 @@ def game_detect():
         if dmg > 100000:
             dmg_reduct_rate = 100000 / dmg
         try:
-            if dmg < switch_val and hp_pct > 0.99:     # 满血打出伤害，则加上下限
+            if dmg < switch_val and hp_pct > 0.8:     # 满血打出伤害，则加上下限
                 set_strength_limit("a_max", dmg / 10000 * 3)
                 set_strength_limit("a_min", dmg / 10000 * 0.5)
                 set_strength_limit("b_max", dmg / 10000 * 3)
                 set_strength_limit("b_min", dmg / 10000 * 0.5)
-            elif dmg > switch_val and hp_pct > 0.99:
+            elif dmg > switch_val and hp_pct > 0.8:
                 set_strength_limit("a_max", (dmg - switch_val) / 10000 * 3 + 10)
                 set_strength_limit("a_min", (dmg - switch_val) / 10000 * 1 + 10)
                 set_strength_limit("b_max", (dmg - switch_val) / 10000 * 3 + 10)
                 set_strength_limit("b_min", (dmg - switch_val) / 10000 * 1 + 10)
-            elif hp_pct < 0.99 and hp_pct > 0.5:
+            elif hp_pct < 0.8 and hp_pct > 0.4:
                 set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 2.5) - (dmg / 10000 * 2 * dmg_reduct_rate))
                 set_strength_limit("a_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5 * dmg_reduct_rate))
                 set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 2.5) - (dmg / 10000 * 2 * dmg_reduct_rate))
                 set_strength_limit("b_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5 * dmg_reduct_rate))
-            elif hp_pct < 0.5:
-                set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 10)
+            elif hp_pct < 0.4:
+                set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 20)
                 set_strength_limit("a_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5) + 5)
-                set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 10)
+                set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 20)
                 set_strength_limit("b_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5) + 5)
         except TypeError:
             strength_limit.update(strength_limit_init)
