@@ -1,34 +1,22 @@
 import re
-import os
 import json
 import time
 import uuid
-import numpy
 import qrcode
 import random
 import asyncio
 import threading
 import netifaces
-import pytesseract
 import websockets
 import tkinter as tk
-from PIL import Image, ImageTk, ImageGrab, ImageOps, ImageFilter, ImageEnhance
-import ctypes
-from ctypes import windll, byref, c_ubyte
-from ctypes.wintypes import RECT
-
-from sysinfo import bbox_hp, bbox_dmg, tesseract_cmd_path
-import tkinter as tk
 from ctypes import windll
-from collections import Counter
+from sysinfo import data_path
+from PIL import Image, ImageTk
 
 server_uuid = str(uuid.uuid4())
 client_uuid = ""
 clientws: websockets.WebSocketServerProtocol
 
-dmg_buf = [0, 0, 0, 0, 0]
-dmg_buf_idx = 0
-dmg_buf_init = 0
 dmg_prev = 0
 
 g_exit = 0
@@ -52,9 +40,13 @@ feed_back_msg = {
     "feedback-9": "B通道：⬡",
 }
 
+# 初始限制
 strength_limit_init = {"a_min": 15, "a_max":30, "b_min": 15, "b_max": 30}
+# 最大限制
 strength_limit_max = {"a_min": 30, "a_max":80, "b_min": 30, "b_max": 80}
+# 当前限制
 strength_limit = {"a_min": 15, "a_max":30, "b_min": 15, "b_max": 30}
+# 当前强度
 strength_a = 15
 strength_b = 15
 
@@ -67,7 +59,6 @@ class StatusDisplay:
         self.root.title("Status")
 
         screen_width = root.winfo_screenwidth()
-        # print(screen_width)
         self.root.geometry(f"+{screen_width-140}+0")  # 设置窗口位置，紧贴右上角
 
         self.root.wm_attributes("-transparentcolor", "black")  # 设置透明色
@@ -78,62 +69,15 @@ class StatusDisplay:
         self.make_window_click_through()
 
     def make_window_click_through(self):
-        FindWindowA = windll.user32.FindWindowA
         GetWindowLongA = windll.user32.GetWindowLongA
         SetWindowLongA = windll.user32.SetWindowLongA
         SetLayeredWindowAttributes = windll.user32.SetLayeredWindowAttributes
 
         hwnd = self.root.winfo_id()
-        # print(hwnd)
         style = GetWindowLongA(hwnd, -20)  # 获取当前扩展样式
         style |= 0x00080000 | 0x00000020  # 添加透明和点击穿透样式
         SetWindowLongA(hwnd, -20, style)
         SetLayeredWindowAttributes(hwnd, 0x00000000, 0, 1)
-
-    # def update_message(self, message):
-    #     self.label.config(text=message)
-    #     self.root.after(1000, self.update_message, message)  # 每秒更新一次消息
-
-
-def capture_window(window_title):
-    FindWindowA = windll.user32.FindWindowA
-    FindWindowA.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-    FindWindowA.restype = ctypes.c_void_p
-
-    hwnd = FindWindowA(None, window_title.encode('gbk'))
-    if hwnd == 0:
-        raise Exception(f"Window not found: {window_title}")
-    
-    GetDC = windll.user32.GetDC
-    CreateCompatibleDC = windll.gdi32.CreateCompatibleDC
-    GetClientRect = windll.user32.GetClientRect
-    CreateCompatibleBitmap = windll.gdi32.CreateCompatibleBitmap
-    SelectObject = windll.gdi32.SelectObject
-    BitBlt = windll.gdi32.BitBlt
-    SRCCOPY = 0x00CC0020
-    GetBitmapBits = windll.gdi32.GetBitmapBits
-    # GetBitmapBits.argtypes = [ctypes.c_void_p, ctypes.c_long, ctypes.c_void_p]
-    DeleteObject = windll.gdi32.DeleteObject
-    ReleaseDC = windll.user32.ReleaseDC
-    windll.user32.SetProcessDPIAware()
-    r = RECT()
-    GetClientRect(hwnd, byref(r))
-    # print(f"win l: {r.left}, r: {r.right}, t: {r.top}, b: {r.bottom}")
-
-    dc = GetDC(hwnd)
-    cdc = CreateCompatibleDC(dc)
-    bitmap = CreateCompatibleBitmap(dc, r.right, r.bottom)
-    SelectObject(cdc, bitmap)
-    BitBlt(cdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY)
-    total_bytes = r.right * r.bottom * 4
-    buffer_arr = bytearray(total_bytes)
-    buffer = ctypes.c_ubyte * total_bytes
-    GetBitmapBits(bitmap, total_bytes, buffer.from_buffer(buffer_arr))
-    DeleteObject(bitmap)
-    DeleteObject(cdc)
-    ReleaseDC(hwnd, dc)
-    # print(buffer_arr)
-    return Image.frombuffer("RGBA", (r.right, r.bottom), buffer_arr, "raw", "BGRA", 0, 1)
 
 
 try:
@@ -159,7 +103,6 @@ def show_qrcode(image_path: str):
     label = tk.Label(root, image=photo)
     label.pack()
     root.update_idletasks()
-    # print(root.winfo_screenwidth())
     window_width = root.winfo_width()
     window_height = root.winfo_height()
 
@@ -175,6 +118,7 @@ def show_qrcode(image_path: str):
 
     root.mainloop()
 
+
 def show_status():
     root = tk.Tk(className="Status")
     display = StatusDisplay(root)
@@ -185,6 +129,7 @@ def show_status():
 
     update()
     root.mainloop()
+
 
 async def conn_handler(websocket: websockets.WebSocketServerProtocol, path):
     global clientws
@@ -224,7 +169,6 @@ async def conn_handler(websocket: websockets.WebSocketServerProtocol, path):
 
     try:
         async for message in websocket:
-            # print("收到消息：", message)
             try:
                 data = json.loads(
                     message,
@@ -241,7 +185,6 @@ async def conn_handler(websocket: websockets.WebSocketServerProtocol, path):
                 and data.get("message")
                 and data.get("targetId")
             ):
-                # await msg_handler(websocket, data)
                 # client msg proc
                 if data["type"] == "msg":
                     # get strength data
@@ -249,11 +192,7 @@ async def conn_handler(websocket: websockets.WebSocketServerProtocol, path):
                         "strength-(\\d*)\\+(\\d*)\\+(\\d*)\\+(\\d*)", data["message"]
                     )
                     if strength_re != None:
-                        # strength_a = strength_re.group(1) # Str A
-                        # strength_b = strength_re.group(2) # Str B
-                        strength_limit_a = strength_re.group(3)  # Str max A
-                        strength_limit_b = strength_re.group(4)  # Str max B
-                        # print(f'A: {strength_a}, B: {strength_b}, AM: {strength_limit_a}, BM: {strength_limit_b}')
+                        pass
                 if data["type"] == "break":
                     print(f"WebSocket 连接已关闭, client_id: {client_uuid}")
                     g_exit = 1
@@ -261,54 +200,6 @@ async def conn_handler(websocket: websockets.WebSocketServerProtocol, path):
         print(f"WebSocket 连接已关闭, client_id: {client_uuid}")
         g_exit = 1
         
-
-    # get strength limit
-    # data = json.loads(await websocket.recv()) # this can be ignore
-    # print(data)
-
-
-def ocr(bbox, threshold) -> str:
-    pytesseract.pytesseract.tesseract_cmd = (tesseract_cmd_path)
-    img = capture_window("《战舰世界》").convert("L").crop(bbox)
-    
-    # enhance
-    enhancer = ImageEnhance.Sharpness(img)
-    img = enhancer.enhance(1.8)
-    img = img.point(lambda p: p > 253 and 255)
-
-    img = ImageOps.invert(img)
-
-    # 二值化处理
-    # if threshold > 0:
-    #     img = img.point(lambda p: p > threshold and 255)
-
-    img = ImageOps.invert(img)
-    # img = img.filter(ImageFilter.MedianFilter())
-    img.save("game.bmp")
-    conf = r"--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789/"
-    return pytesseract.image_to_string(img, config=conf)
-
-
-def get_hp_pct() -> float:
-    img = capture_window("《战舰世界》").convert("RGB").crop(bbox_hp)
-    # img = ImageGrab.grab(bbox=bbox_hp)
-    # img = img.convert("RGB")
-
-    img_array = numpy.array(img)
-    green_pixels = numpy.logical_and(img_array[:, :, 1] > img_array[:, :, 0], img_array[:, :, 1] > img_array[:, :, 2])
-    green_area = numpy.sum(green_pixels)
-
-    total_area = img_array.shape[0] * img_array.shape[1]
-
-    green_percentage = (green_area / total_area)
-    return green_percentage
-
-
-def ocr_dmg() -> int:
-    try:
-        return int(ocr(bbox_dmg, 0))
-    except ValueError:
-        return 0
 
 
 async def strength_ctrl(channel: int, strength: int):
@@ -383,63 +274,51 @@ def set_strength_limit(key: str, value: int):
     strength_limit[key] = strength_limit_init[key] + int(value)
 
 
+def read_game_data():
+    data = {"hp_pct": None, "dmg": None}
+    with open(data_path, "r") as f:
+        while data["hp_pct"] == None and data["dmg"] == None:
+            try:
+                data.update(json.loads(f.read()))
+            except json.decoder.JSONDecodeError:
+                data = {"hp_pct": None, "dmg": None}
+                f.seek(0, 0)
+            time.sleep(0.1)
+
+    return data["hp_pct"], data["dmg"]
+
+
 def game_detect():
     global strength_limit
-    global dmg_buf_idx
-    global dmg_buf_init
-    global dmg_buf
-    global dmg_prev
+    dmg_reduct_rate = 0
     loop.create_task(strength_ctrl_loop())
     loop.create_task(wave_ctrl_loop())
     while g_exit == 0:
-        hp_pct = get_hp_pct()
-        dmg_buf[dmg_buf_idx] = ocr_dmg()
-        dmg_buf_idx += 1
-        if dmg_buf_idx >= 5:
-            dmg_buf_idx = 0
-
-        if dmg_buf_init == 0:
-            dmg_buf[1] = dmg_buf[0]
-            dmg_buf[2] = dmg_buf[0]
-            dmg_buf[3] = dmg_buf[0]
-            dmg_buf[4] = dmg_buf[0]
-            dmg_buf_init = 1
-
-        counter = Counter(dmg_buf)
-        dmg = counter.most_common(1)[0][0]
-        
-        # 防止伤害异常突变或者减少
-        if dmg - dmg_prev >= 150000 or dmg_prev > dmg or dmg > 600000:
-            dmg = 0
-            dmg_buf[0] = 0
-            dmg_buf_init = 0
-        dmg_prev = dmg
+        hp_pct, dmg = read_game_data()
 
         switch_val = 60000
         if dmg > 100000:
             dmg_reduct_rate = 100000 / dmg
         try:
-            if dmg <= 0:
-                pass
-            elif dmg < switch_val and hp_pct > 0.9:     # 满血打出伤害，则加上下限
+            if dmg < switch_val and hp_pct > 0.99:     # 满血打出伤害，则加上下限
                 set_strength_limit("a_max", dmg / 10000 * 3)
                 set_strength_limit("a_min", dmg / 10000 * 0.5)
                 set_strength_limit("b_max", dmg / 10000 * 3)
                 set_strength_limit("b_min", dmg / 10000 * 0.5)
-            elif dmg > switch_val and hp_pct > 0.9:
+            elif dmg > switch_val and hp_pct > 0.99:
                 set_strength_limit("a_max", (dmg - switch_val) / 10000 * 3 + 10)
                 set_strength_limit("a_min", (dmg - switch_val) / 10000 * 1 + 10)
                 set_strength_limit("b_max", (dmg - switch_val) / 10000 * 3 + 10)
                 set_strength_limit("b_min", (dmg - switch_val) / 10000 * 1 + 10)
-            elif hp_pct < 0.9 and hp_pct > 0.5:
-                set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 3) - (dmg / 10000 * 2 * dmg_reduct_rate))
+            elif hp_pct < 0.99 and hp_pct > 0.5:
+                set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 2.5) - (dmg / 10000 * 2 * dmg_reduct_rate))
                 set_strength_limit("a_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5 * dmg_reduct_rate))
-                set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 3) - (dmg / 10000 * 2 * dmg_reduct_rate))
+                set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 2.5) - (dmg / 10000 * 2 * dmg_reduct_rate))
                 set_strength_limit("b_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5 * dmg_reduct_rate))
             elif hp_pct < 0.5:
-                set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 1) - (dmg / 10000 * 2) + 38)
+                set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 10)
                 set_strength_limit("a_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5) + 5)
-                set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 1) - (dmg / 10000 * 2) + 38)
+                set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 10)
                 set_strength_limit("b_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5) + 5)
         except TypeError:
             strength_limit.update(strength_limit_init)
@@ -449,12 +328,12 @@ def game_detect():
         # 防止上下限大于最大值
         if all(strength_limit_max[k] < strength_limit[k] for k in strength_limit):
             strength_limit.update(strength_limit_max)
-        if dmg == 0:
-            strength_limit.update(strength_limit_init)
+
         print("cur:", strength_a, "hp_pct:", hp_pct, "dmg:", dmg, "ua:", strength_limit["a_max"], "ub:",
               strength_limit["b_max"], "da:", strength_limit["a_min"], "db:", strength_limit["b_min"])
         
         time.sleep(1)
+
 
 def server_main():
     gateway_lst = netifaces.gateways()
@@ -472,13 +351,11 @@ def server_main():
     img = qr.make_image(fill_color="black", back_color="white")
     img.save("qrcode.png")
 
-    # os.system("adb push qrcode.png /sdcard/DGLAB/")
     show_qrcode("qrcode.png")
     show_status()
 
 
 if __name__ == "__main__":
-    # ocr_dmg()
     server_ws = websockets.serve(conn_handler, "", 9999)
 
     threading.Thread(target=server_main).start()
