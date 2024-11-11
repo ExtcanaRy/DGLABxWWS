@@ -40,6 +40,7 @@ feed_back_msg = {
     "feedback-9": "B通道：⬡",
 }
 
+
 # 初始限制
 strength_limit_init = {"a_min": 15, "a_max":30, "b_min": 15, "b_max": 30}
 # 最大限制
@@ -288,40 +289,45 @@ def read_game_data():
     return data["hp_pct"], data["dmg"]
 
 
-def game_detect():
+def control_algorithm(hp_pct, dmg):
     global strength_limit
     dmg_reduct_rate = 0
+    switch_val = 60000
+    if dmg > 100000:
+        dmg_reduct_rate = 100000 / dmg
+    try:
+        if dmg < switch_val and hp_pct > 0.8:     # 满血打出伤害，则加上下限
+            set_strength_limit("a_max", dmg / 10000 * 3)
+            set_strength_limit("a_min", dmg / 10000 * 0.5)
+            set_strength_limit("b_max", dmg / 10000 * 3)
+            set_strength_limit("b_min", dmg / 10000 * 0.5)
+        elif dmg > switch_val and hp_pct > 0.8:
+            set_strength_limit("a_max", (dmg - switch_val) / 10000 * 3 + 10)
+            set_strength_limit("a_min", (dmg - switch_val) / 10000 * 1 + 10)
+            set_strength_limit("b_max", (dmg - switch_val) / 10000 * 3 + 10)
+            set_strength_limit("b_min", (dmg - switch_val) / 10000 * 1 + 10)
+        elif hp_pct < 0.8 and hp_pct > 0.4:
+            set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 2.5) - (dmg / 10000 * 2 * dmg_reduct_rate))
+            set_strength_limit("a_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5 * dmg_reduct_rate))
+            set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 2.5) - (dmg / 10000 * 2 * dmg_reduct_rate))
+            set_strength_limit("b_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5 * dmg_reduct_rate))
+        elif hp_pct < 0.4:
+            set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 20)
+            set_strength_limit("a_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5) + 5)
+            set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 20)
+            set_strength_limit("b_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5) + 5)
+    except TypeError:
+        strength_limit.update(strength_limit_init)
+
+
+def game_detect():
+    global strength_limit
     loop.create_task(strength_ctrl_loop())
     loop.create_task(wave_ctrl_loop())
     while g_exit == 0:
         hp_pct, dmg = read_game_data()
 
-        switch_val = 60000
-        if dmg > 100000:
-            dmg_reduct_rate = 100000 / dmg
-        try:
-            if dmg < switch_val and hp_pct > 0.8:     # 满血打出伤害，则加上下限
-                set_strength_limit("a_max", dmg / 10000 * 3)
-                set_strength_limit("a_min", dmg / 10000 * 0.5)
-                set_strength_limit("b_max", dmg / 10000 * 3)
-                set_strength_limit("b_min", dmg / 10000 * 0.5)
-            elif dmg > switch_val and hp_pct > 0.8:
-                set_strength_limit("a_max", (dmg - switch_val) / 10000 * 3 + 10)
-                set_strength_limit("a_min", (dmg - switch_val) / 10000 * 1 + 10)
-                set_strength_limit("b_max", (dmg - switch_val) / 10000 * 3 + 10)
-                set_strength_limit("b_min", (dmg - switch_val) / 10000 * 1 + 10)
-            elif hp_pct < 0.8 and hp_pct > 0.4:
-                set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 2.5) - (dmg / 10000 * 2 * dmg_reduct_rate))
-                set_strength_limit("a_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5 * dmg_reduct_rate))
-                set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 2.5) - (dmg / 10000 * 2 * dmg_reduct_rate))
-                set_strength_limit("b_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5 * dmg_reduct_rate))
-            elif hp_pct < 0.4:
-                set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 20)
-                set_strength_limit("a_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5) + 5)
-                set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 20)
-                set_strength_limit("b_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5) + 5)
-        except TypeError:
-            strength_limit.update(strength_limit_init)
+        control_algorithm(hp_pct, dmg)
         # 防止上下限小于默认值
         if all(strength_limit_init[k] > strength_limit[k] for k in strength_limit):
             strength_limit.update(strength_limit_init)
