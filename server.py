@@ -1,45 +1,22 @@
-import re
+import io
 import json
 import time
-import uuid
 import qrcode
 import random
 import asyncio
 import threading
 import netifaces
-import websockets
 import tkinter as tk
 from ctypes import windll
-from sysinfo import data_path
+from data import data_path, PULSE_DATA
 from PIL import Image, ImageTk
+from pydglab_ws import StrengthData, FeedbackButton, Channel, StrengthOperationType, RetCode, DGLabWSServer
 
-server_uuid = str(uuid.uuid4())
-client_uuid = ""
-clientws: websockets.WebSocketServerProtocol
+g_client = None
 
 dmg_prev = 0
 
 g_exit = 0
-
-wave_data = [
-    '["0A0A0A0A00000000","0A0A0A0A0A0A0A0A","0A0A0A0A14141414","0A0A0A0A1E1E1E1E","0A0A0A0A28282828","0A0A0A0A32323232","0A0A0A0A3C3C3C3C","0A0A0A0A46464646","0A0A0A0A50505050","0A0A0A0A5A5A5A5A","0A0A0A0A64646464"]',
-    '["0A0A0A0A00000000","0D0D0D0D0F0F0F0F","101010101E1E1E1E","1313131332323232","1616161641414141","1A1A1A1A50505050","1D1D1D1D64646464","202020205A5A5A5A","2323232350505050","262626264B4B4B4B","2A2A2A2A41414141"]',
-    '["4A4A4A4A64646464","4545454564646464","4040404064646464","3B3B3B3B64646464","3636363664646464","3232323264646464","2D2D2D2D64646464","2828282864646464","2323232364646464","1E1E1E1E64646464","1A1A1A1A64646464"]'
-]
-
-feed_back_msg = {
-    "feedback-0": "A通道：○",
-    "feedback-1": "A通道：△",
-    "feedback-2": "A通道：□",
-    "feedback-3": "A通道：☆",
-    "feedback-4": "A通道：⬡",
-    "feedback-5": "B通道：○",
-    "feedback-6": "B通道：△",
-    "feedback-7": "B通道：□",
-    "feedback-8": "B通道：☆",
-    "feedback-9": "B通道：⬡",
-}
-
 
 # 初始限制
 strength_limit_init = {"a_min": 15, "a_max":30, "b_min": 15, "b_max": 30}
@@ -89,17 +66,23 @@ except RuntimeError:
 
 
 def qr_timer(root: tk.Tk):
-    if client_uuid != "":
-        root.destroy()
-    else:
+    if g_client.not_bind:
         root.after(500, qr_timer, root)
-    
+    else:
+        root.destroy()
 
-def show_qrcode(image_path: str):
+
+def show_qrcode(data: str):
+    qr = qrcode.QRCode()
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    img.save("qrcode.png")
+
     root = tk.Tk(className="QRCode")
     root.title("请使用郊狼APP在Socket模式扫描此二维码")
 
-    image = Image.open(image_path)
+    image = Image.open("qrcode.png")
     photo = ImageTk.PhotoImage(image)
     label = tk.Label(root, image=photo)
     label.pack()
@@ -120,6 +103,16 @@ def show_qrcode(image_path: str):
     root.mainloop()
 
 
+def print_qrcode(data: str):
+    """输出二维码到终端界面"""
+    qr = qrcode.QRCode()
+    qr.add_data(data)
+    f = io.StringIO()
+    qr.print_ascii(out=f)
+    f.seek(0)
+    print(f.read())
+
+
 def show_status():
     root = tk.Tk(className="Status")
     display = StatusDisplay(root)
@@ -132,94 +125,19 @@ def show_status():
     root.mainloop()
 
 
-async def conn_handler(websocket: websockets.WebSocketServerProtocol, path):
-    global clientws
-    global client_uuid
-    global g_exit
-
-    print("New conn income")
-
-    # handshk
-    print("Sending bind data")
-    await websocket.send(
-        f'{{"type":"bind","clientId":"{server_uuid}","targetId":"","message":"targetId"}}'
-    )
-    data = json.loads(await websocket.recv())
-
-    if (
-        data["type"] != "bind"
-        or data["clientId"] != server_uuid
-        or data["message"] != "DGLAB"
-    ):
-        print(data)
-        return -1
-
-    print("Sending bind result")
-    await websocket.send(
-        f'{{"type":"bind","clientId":"{server_uuid}","targetId":"{client_uuid}","message":"200"}}'
-    )
-
-    client_uuid = data["targetId"]
-    # handshk finish
-    clientws = websocket
-
-    print("Handshk finished.", client_uuid)
-
-    threading.Thread(target=game_detect).start()
-    g_exit = 0
-
-    try:
-        async for message in websocket:
-            try:
-                data = json.loads(
-                    message,
-                )
-            except json.JSONDecodeError:
-                await websocket.send(
-                    '{"type": "msg", "clientId": "", "targetId": "", "message": "403"}'
-                )
-                continue
-
-            if (
-                data.get("type")
-                and data.get("clientId")
-                and data.get("message")
-                and data.get("targetId")
-            ):
-                # client msg proc
-                if data["type"] == "msg":
-                    # get strength data
-                    strength_re = re.search(
-                        "strength-(\\d*)\\+(\\d*)\\+(\\d*)\\+(\\d*)", data["message"]
-                    )
-                    if strength_re != None:
-                        pass
-                if data["type"] == "break":
-                    print(f"WebSocket 连接已关闭, client_id: {client_uuid}")
-                    g_exit = 1
-    except websockets.exceptions.ConnectionClosed:
-        print(f"WebSocket 连接已关闭, client_id: {client_uuid}")
-        g_exit = 1
-        
+async def strength_ctrl(channel: Channel, strength: int):
+    await g_client.set_strength(channel, StrengthOperationType.SET_TO, strength)
 
 
-async def strength_ctrl(channel: int, strength: int):
-    await clientws.send(
-            json.dumps({"type": "msg", "clientId": server_uuid, "targetId": client_uuid, "message": f"strength-{channel}+2+{strength}"})
-        )
-
-
-async def wave_ctrl(channel: str, wave: str):
-    await clientws.send(
-           json.dumps({"type": "msg", "clientId": server_uuid, "targetId": client_uuid, "message": f"pulse-{channel}:{wave}"})
-        )
+async def pulse_ctrl(channel: Channel, pulse_name: str):
+    await g_client.add_pulses(channel, *(PULSE_DATA[pulse_name] * 5))
 
 
 async def strength_ctrl_init():
     strength_init = 0
     while strength_init <= strength_limit["a_min"] and strength_init <= strength_limit["b_min"]:
-        await strength_ctrl(1, strength_init)
-        await strength_ctrl(2, strength_init)
+        await strength_ctrl(Channel.A, strength_init)
+        await strength_ctrl(Channel.B, strength_init)
         strength_init += 1
         await asyncio.sleep(0.25)
     strength_init = 0
@@ -230,8 +148,8 @@ async def strength_ctrl_loop():
     await strength_ctrl_init()
     while g_exit == 0:
         while strength_a <= strength_limit["a_max"] and strength_b <= strength_limit["b_max"]:
-            await strength_ctrl(1, strength_a)
-            await strength_ctrl(2, strength_b)
+            await strength_ctrl(Channel.A, strength_a)
+            await strength_ctrl(Channel.B, strength_b)
             strength_a += 1
             strength_b += 1
             await asyncio.sleep(0.15)
@@ -244,8 +162,8 @@ async def strength_ctrl_loop():
         await asyncio.sleep(delay_high)
 
         while strength_a >= strength_limit["a_min"] and strength_b >= strength_limit["b_min"]:
-            await strength_ctrl(1, strength_a)
-            await strength_ctrl(2, strength_b)
+            await strength_ctrl(Channel.A, strength_a)
+            await strength_ctrl(Channel.B, strength_b)
             strength_a -= 1
             strength_b -= 1
             await asyncio.sleep(0.2)
@@ -257,16 +175,16 @@ async def strength_ctrl_loop():
 
         rest_probability = random.randint(0, 100)
         if rest_probability <= 40:
-            await strength_ctrl(1, 0)
-            await strength_ctrl(2, 0)
+            await strength_ctrl(Channel.A, 0)
+            await strength_ctrl(Channel.B, 0)
             await asyncio.sleep(30)
             await strength_ctrl_init()
 
 
 async def wave_ctrl_loop():
     while g_exit == 0:
-        await wave_ctrl("A", wave_data[random.randint(0, 2)])
-        await wave_ctrl("B", wave_data[random.randint(0, 2)])
+        await pulse_ctrl(Channel.A, "快速按捏")
+        await pulse_ctrl(Channel.B, "快速按捏")
         await asyncio.sleep(1)
 
 
@@ -320,10 +238,8 @@ def control_algorithm(hp_pct, dmg):
         strength_limit.update(strength_limit_init)
 
 
-def game_detect():
+def get_game_data():
     global strength_limit
-    loop.create_task(strength_ctrl_loop())
-    loop.create_task(wave_ctrl_loop())
     while g_exit == 0:
         hp_pct, dmg = read_game_data()
 
@@ -335,36 +251,48 @@ def game_detect():
         if all(strength_limit_max[k] < strength_limit[k] for k in strength_limit):
             strength_limit.update(strength_limit_max)
 
-        print("cur:", strength_a, "hp_pct:", hp_pct, "dmg:", dmg, "ua:", strength_limit["a_max"], "ub:",
-              strength_limit["b_max"], "da:", strength_limit["a_min"], "db:", strength_limit["b_min"])
+        # print("cur:", strength_a, "hp_pct:", hp_pct, "dmg:", dmg, "ua:", strength_limit["a_max"], "ub:",
+        #       strength_limit["b_max"], "da:", strength_limit["a_min"], "db:", strength_limit["b_min"])
         
         time.sleep(1)
 
 
-def server_main():
-    gateway_lst = netifaces.gateways()
-    ip = netifaces.ifaddresses(gateway_lst["default"][netifaces.AF_INET][1])[netifaces.AF_INET][0]["addr"]
-
-    data = (
-        "https://www.dungeon-lab.com/app-download.php#DGLAB-SOCKET#"
-        + f"ws://{ip}:9999/"
-        + server_uuid
-    )
-    print(data)
-    qr = qrcode.QRCode()
-    qr.add_data(data)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    img.save("qrcode.png")
-
-    show_qrcode("qrcode.png")
+def show_info(url: str):
+    print(url)
+    print_qrcode(url)
+    show_qrcode(url)
     show_status()
 
 
+async def main():
+    global g_client
+    async with DGLabWSServer("0.0.0.0", 5678, 60) as server:
+        client = server.new_local_client()
+        g_client = client
+        gateway_lst = netifaces.gateways()
+        ip = netifaces.ifaddresses(gateway_lst["default"][netifaces.AF_INET][1])[netifaces.AF_INET][0]["addr"]
+
+        url = client.get_qrcode(f"ws://{ip}:5678")
+        print("请用 DG-Lab App 扫描二维码以连接")
+        threading.Thread(target=show_info, args=(url,), daemon=True).start()
+
+        threading.Thread(target=get_game_data, daemon=True).start()
+        loop.create_task(strength_ctrl_loop())
+        loop.create_task(wave_ctrl_loop())
+
+        await client.bind()
+        print(f"已与 App {client.target_id} 成功绑定")
+
+        async for data in client.data_generator():
+            if isinstance(data, StrengthData):
+                pass
+            elif isinstance(data, FeedbackButton):
+                pass
+            elif data == RetCode.CLIENT_DISCONNECTED:
+                print("App 已断开连接")
+                loop.stop()
+
+
 if __name__ == "__main__":
-    server_ws = websockets.serve(conn_handler, "", 9999)
-
-    threading.Thread(target=server_main).start()
-
-    loop.run_until_complete(server_ws)
+    loop.create_task(main())
     loop.run_forever()
