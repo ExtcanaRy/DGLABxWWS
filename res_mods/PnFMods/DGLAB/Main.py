@@ -11,12 +11,14 @@ class DGLAB():
         callbacks.perTick(self.updateData)
         self.player_id = None
         self.damage = 0
+        self.eatTorpedo = 0
         self.health = 1
         self.maxHealth = 1
         self.healthPercentage = 1
 
     def reinit_data(self, *args, **kwargs):
         self.damage = 0
+        self.eatTorpedo = 0
         self.health = 1
         self.maxHealth = 1
         self.healthPercentage = 1
@@ -24,10 +26,16 @@ class DGLAB():
     def onReceiveShellInfo(self, victimID, shooterID, ammoId, matID, shotID, Booleans, damage, shotPosition, yaw, hlinfo):
         playerInfo = battle.getSelfPlayerInfo()
         self.player_id = playerInfo["id"]
-        if shooterID != playerInfo["shipId"]:
-            return
 
+        # 确定弹药类型为鱼雷并且排除航母雷
+        if str(battle.getAmmoParams(ammoId)).find("Torpedo") != -1 and str(battle.getPlayerByVehicleId(shooterID)).find("IDS_AIRCARRIER") == -1:
+            self.eatTorpedo = self.eatTorpedo + 1
+
+
+        if shooterID == playerInfo["shipId"]:
+            return
         self.damage = self.damage + damage
+        
 
     def updateData(self):
         try:
@@ -43,6 +51,8 @@ class DGLAB():
             f.write(str(self.healthPercentage))
             f.write(', "dmg": ')
             f.write(str(self.damage))
+            f.write(', "eat_torpedo": ')
+            f.write(str(self.eatTorpedo))
             f.write('}')
 
 

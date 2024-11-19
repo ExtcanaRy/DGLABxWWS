@@ -8,7 +8,7 @@ import threading
 import netifaces
 import tkinter as tk
 from ctypes import windll
-from data import data_path, PULSE_DATA
+from data import data_path, EAT_TORPEDO_RATE, PULSE_DATA
 from PIL import Image, ImageTk
 from pydglab_ws import StrengthData, FeedbackButton, Channel, StrengthOperationType, RetCode, DGLabWSServer
 
@@ -17,6 +17,7 @@ g_client = None
 dmg_prev = 0
 
 g_exit = 0
+g_eat_torpedo = 0
 
 # 初始限制
 strength_limit_init = {"a_min": 15, "a_max":30, "b_min": 15, "b_max": 30}
@@ -37,11 +38,11 @@ class StatusDisplay:
         self.root.title("Status")
 
         screen_width = root.winfo_screenwidth()
-        self.root.geometry(f"+{screen_width-140}+0")  # 设置窗口位置，紧贴右上角
+        self.root.geometry(f"+{screen_width-160}+0")  # 设置窗口位置，紧贴右上角
 
         self.root.wm_attributes("-transparentcolor", "black")  # 设置透明色
 
-        self.label = tk.Label(root, text="", font=("Microsoft YaHei", 9), fg="white", bg="black")
+        self.label = tk.Label(root, text="", font=("Microsoft YaHei", 11), fg="white", bg="black")
         self.label.pack()
 
         self.make_window_click_through()
@@ -118,7 +119,8 @@ def show_status():
     display = StatusDisplay(root)
 
     def update():
-        display.label.config(text=f"当前:{strength_a} 最大:{strength_limit["a_max"]} 最小:{strength_limit["a_min"]}")
+        # 当前/最大/最小/吃雷
+        display.label.config(text=f"{strength_a}/{strength_limit["a_max"]}/{strength_limit["a_min"]}/{g_eat_torpedo}")
         root.after(500, update)
 
     update()
@@ -194,46 +196,48 @@ def set_strength_limit(key: str, value: int):
 
 
 def read_game_data():
-    data = {"hp_pct": None, "dmg": None}
+    data = {"hp_pct": None, "dmg": None, "eat_torpedo": None}
     with open(data_path, "r") as f:
-        while data["hp_pct"] == None and data["dmg"] == None:
+        while data["hp_pct"] == None and data["dmg"] == None and data["eat_torpedo"] == None:
             try:
                 data.update(json.loads(f.read()))
             except json.decoder.JSONDecodeError:
-                data = {"hp_pct": None, "dmg": None}
+                data = {"hp_pct": None, "dmg": None, "eat_torpedo": None}
                 f.seek(0, 0)
             time.sleep(0.1)
 
-    return data["hp_pct"], data["dmg"]
+    return data["hp_pct"], data["dmg"], data["eat_torpedo"]
 
 
-def control_algorithm(hp_pct, dmg):
-    global strength_limit
+def control_algorithm(hp_pct, dmg, eat_torpedo):
+    global strength_limit, g_eat_torpedo
+    g_eat_torpedo = eat_torpedo
+    eat_torpedo_add = eat_torpedo * EAT_TORPEDO_RATE
     dmg_reduct_rate = 0
     switch_val = 60000
     if dmg > 100000:
         dmg_reduct_rate = 100000 / dmg
     try:
         if dmg < switch_val and hp_pct > 0.8:     # 满血打出伤害，则加上下限
-            set_strength_limit("a_max", dmg / 10000 * 3)
-            set_strength_limit("a_min", dmg / 10000 * 0.5)
-            set_strength_limit("b_max", dmg / 10000 * 3)
-            set_strength_limit("b_min", dmg / 10000 * 0.5)
+            set_strength_limit("a_max", dmg / 10000 * 3 + eat_torpedo_add)
+            set_strength_limit("a_min", dmg / 10000 * 0.5 + eat_torpedo_add)
+            set_strength_limit("b_max", dmg / 10000 * 3 + eat_torpedo_add)
+            set_strength_limit("b_min", dmg / 10000 * 0.5 + eat_torpedo_add)
         elif dmg > switch_val and hp_pct > 0.8:
-            set_strength_limit("a_max", (dmg - switch_val) / 10000 * 3 + 10)
-            set_strength_limit("a_min", (dmg - switch_val) / 10000 * 1 + 10)
-            set_strength_limit("b_max", (dmg - switch_val) / 10000 * 3 + 10)
-            set_strength_limit("b_min", (dmg - switch_val) / 10000 * 1 + 10)
+            set_strength_limit("a_max", (dmg - switch_val) / 10000 * 3 + 10 + eat_torpedo_add)
+            set_strength_limit("a_min", (dmg - switch_val) / 10000 * 1 + 10 + eat_torpedo_add)
+            set_strength_limit("b_max", (dmg - switch_val) / 10000 * 3 + 10 + eat_torpedo_add)
+            set_strength_limit("b_min", (dmg - switch_val) / 10000 * 1 + 10 + eat_torpedo_add)
         elif hp_pct < 0.8 and hp_pct > 0.4:
-            set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 2.5) - (dmg / 10000 * 2 * dmg_reduct_rate))
-            set_strength_limit("a_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5 * dmg_reduct_rate))
-            set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 2.5) - (dmg / 10000 * 2 * dmg_reduct_rate))
-            set_strength_limit("b_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5 * dmg_reduct_rate))
+            set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 2.5) - (dmg / 10000 * 2 * dmg_reduct_rate) + eat_torpedo_add)
+            set_strength_limit("a_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5 * dmg_reduct_rate) + eat_torpedo_add)
+            set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 2.5) - (dmg / 10000 * 2 * dmg_reduct_rate) + eat_torpedo_add)
+            set_strength_limit("b_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5 * dmg_reduct_rate) + eat_torpedo_add)
         elif hp_pct < 0.4:
-            set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 20)
-            set_strength_limit("a_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5) + 5)
-            set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 20)
-            set_strength_limit("b_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5) + 5)
+            set_strength_limit("a_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 20 + eat_torpedo_add)
+            set_strength_limit("a_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5) + 5 + eat_torpedo_add)
+            set_strength_limit("b_max", ((1 - hp_pct) / 0.04 * 1.5) - (dmg / 10000 * 2) + 20 + eat_torpedo_add)
+            set_strength_limit("b_min", ((1 - hp_pct) / 0.04 * 0.5) - (dmg / 10000 * 0.5) + 5 + eat_torpedo_add)
     except TypeError:
         strength_limit.update(strength_limit_init)
 
@@ -241,9 +245,9 @@ def control_algorithm(hp_pct, dmg):
 def get_game_data():
     global strength_limit
     while g_exit == 0:
-        hp_pct, dmg = read_game_data()
+        hp_pct, dmg, eat_torpedo = read_game_data()
 
-        control_algorithm(hp_pct, dmg)
+        control_algorithm(hp_pct, dmg, eat_torpedo)
         # 防止上下限小于默认值
         if all(strength_limit_init[k] > strength_limit[k] for k in strength_limit):
             strength_limit.update(strength_limit_init)
